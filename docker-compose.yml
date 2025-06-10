@@ -1,0 +1,25 @@
+# docker-compose.yaml
+
+version: '3.8' # Docker Compose 파일 형식 버전
+
+services:
+  minio:
+    image: minio/minio:latest # MinIO 공식 Docker 이미지 사용
+    container_name: minio     # 컨테이너 이름 지정
+    ports:
+      - "9000:9000" # MinIO API 및 S3 호환 포트
+      - "9001:9001" # MinIO Console (웹 UI) 포트
+    environment: # .env 파일에서 환경 변수를 로드
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY} # 루트 사용자명
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY} # 루트 비밀번호
+    volumes:
+      - minio_data:/data # MinIO 데이터를 저장할 Docker 볼륨
+    command: server /data --console-address ":9001" # MinIO 서버 시작 명령어 및 콘솔 포트 지정
+    healthcheck: # MinIO 컨테이너의 상태를 주기적으로 체크
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+volumes:
+  minio_data: # Docker 관리 볼륨 정의 (데이터 영속성 보장)
