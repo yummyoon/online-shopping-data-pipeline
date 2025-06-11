@@ -31,7 +31,9 @@ services:
         # 여기에 PySpark 작업 스크립트를 위치시킬 것입니다.
         - ./src/spark_jobs:/opt/spark-data/jobs 
         # Spark 로그를 호스트에 저장하기 위한 볼륨 (선택 사항)
-        - spark_logs:/opt/bitnami/spark/logs 
+        - spark_logs:/opt/bitnami/spark/logs
+        # PostgreSQL JDBC 드라이버를 위한 볼륨 마운트 추가 
+        - ./jars:/opt/bitnami/spark/extra-jars/ 
       environment:
         # Spark Master 모드 설정 (Standalone)
         SPARK_MODE: master 
@@ -42,15 +44,40 @@ services:
         SPARK_MASTER_URL: spark://spark:7077 
         # Spark Worker가 Spark Master를 찾도록 설정 (개발 환경에서는 하나의 컨테이너에서 마스터/워커 역할을 겸할 수 있음)
         # 실제 클러스터에서는 spark-worker 서비스에 이 설정을 추가합니다.
+        POSTGRES_DB: ${POSTGRES_DB}
+        POSTGRES_USER: ${POSTGRES_USER}
+        POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       depends_on:
         minio: # MinIO 서비스가 먼저 시작될 때까지 기다립니다.
           condition: service_healthy # MinIO의 헬스체크가 'healthy' 상태가 될 때까지 기다림.
+        db:
+          condition: service_healthy # PostgreSQL 데이터베이스가 'healthy' 상태가 될 때까지 기다림.
       networks:
         - default # 기본 네트워크 사용 (minio와 동일 네트워크)
+
+  db: # PostgreSQL 데이터베이스 서비스 추가
+      image: postgres:13 # PostgreSQL 13 버전 이미지 사용
+      container_name: postgres_db
+      ports:
+        - "5432:5432" # 호스트의 5432 포트와 연결
+      environment:
+        POSTGRES_DB: ${POSTGRES_DB} # 데이터베이스 이름 (환경 변수에서 가져옴)
+        POSTGRES_USER: ${POSTGRES_USER} # 사용자 이름 (환경 변수에서 가져옴)
+        POSTGRES_PASSWORD: ${POSTGRES_PASSWORD} # 비밀번호 (환경 변수에서 가져옴)
+      volumes:
+        - pg_data:/var/lib/postgresql/data # 데이터 영속성을 위한 볼륨
+      healthcheck: # PostgreSQL이 완전히 준비되었는지 확인하는 헬스체크
+        test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+        interval: 10s
+        timeout: 5s
+        retries: 5
+      networks:
+        - default
 
 volumes:
   minio_data: # Docker 관리 볼륨 정의 (데이터 영속성 보장)
   spark_logs: # Spark 로그를 저장할 Docker 관리 볼륨 정의
+  pg_data: # PostgreSQL 데이터를 위한 볼륨 정의
 
 networks:
   default: # 기본 브릿지 네트워크 (MinIO와 Spark 간 통신용)
