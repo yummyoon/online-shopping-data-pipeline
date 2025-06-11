@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from faker import Faker
 from minio import Minio
 from minio.error import S3Error
+import io
 
 # --- 환경 변수 로드 (로컬 테스트용) ---
 # 실제 배포 시에는 .env 파일에서 자동으로 로드됩니다.
@@ -100,7 +101,7 @@ def upload_to_minio(data_lines: list, date_str: str, bucket_name: str):
         client.put_object(
             bucket_name,
             object_name,
-            data_bytes,
+            io.BytesIO(data_bytes), # <-- 이 부분을 이렇게 변경해주세요!
             data_length,
             content_type="application/json"
         )
