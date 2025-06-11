@@ -20,6 +20,37 @@ services:
       interval: 30s
       timeout: 20s
       retries: 3
+  spark:
+      image: bitnami/spark:3.5.0 # Spark 이미지. 3.5.0 버전 사용
+      container_name: spark-master # 컨테이너 이름 지정
+      ports:
+        - "8080:8080" # Spark 웹 UI 포트 (모니터링용)
+        - "7077:7077" # Spark Master와 클라이언트 통신 포트
+      volumes:
+        # 로컬 스크립트 폴더를 Spark 컨테이너 내부로 마운트
+        # 여기에 PySpark 작업 스크립트를 위치시킬 것입니다.
+        - ./src/spark_jobs:/opt/spark-data/jobs 
+        # Spark 로그를 호스트에 저장하기 위한 볼륨 (선택 사항)
+        - spark_logs:/opt/bitnami/spark/logs 
+      environment:
+        # Spark Master 모드 설정 (Standalone)
+        SPARK_MODE: master 
+        # Spark 웹 UI 포트
+        SPARK_MASTER_PORT: 7077
+        SPARK_MASTER_WEBUI_PORT: 8080
+        # Spark Master 컨테이너 내부 네트워크 이름 (도커 컴포즈 서비스 이름)
+        SPARK_MASTER_URL: spark://spark:7077 
+        # Spark Worker가 Spark Master를 찾도록 설정 (개발 환경에서는 하나의 컨테이너에서 마스터/워커 역할을 겸할 수 있음)
+        # 실제 클러스터에서는 spark-worker 서비스에 이 설정을 추가합니다.
+      depends_on:
+        minio: # MinIO 서비스가 먼저 시작될 때까지 기다립니다.
+          condition: service_healthy # MinIO의 헬스체크가 'healthy' 상태가 될 때까지 기다림.
+      networks:
+        - default # 기본 네트워크 사용 (minio와 동일 네트워크)
 
 volumes:
   minio_data: # Docker 관리 볼륨 정의 (데이터 영속성 보장)
+  spark_logs: # Spark 로그를 저장할 Docker 관리 볼륨 정의
+
+networks:
+  default: # 기본 브릿지 네트워크 (MinIO와 Spark 간 통신용)
