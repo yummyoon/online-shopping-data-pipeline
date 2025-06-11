@@ -3,6 +3,7 @@
 import os
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, to_timestamp, lit, current_date
+from pyspark.sql.types import DoubleType, IntegerType # 타입 임포트
 
 def create_spark_session(app_name):
     """
@@ -15,6 +16,16 @@ def create_spark_session(app_name):
     minio_secret_key = os.getenv("MINIO_SECRET_KEY", "minioadmin") # .env 또는 Docker env에서 로드
     minio_endpoint = os.getenv("MINIO_ENDPOINT", "http://minio:9000") # MinIO 컨테이너의 내부 네트워크 주소
 
+    # PostgreSQL 접속 정보는 환경 변수에서 가져옵니다.
+    # Docker Compose에서 Spark 컨테이너의 환경 변수로 설정해 줍니다.
+    pg_db = os.getenv("POSTGRES_DB", "analytics_db")
+    pg_user = os.getenv("POSTGRES_USER", "airflow")
+    pg_password = os.getenv("POSTGRES_PASSWORD", "airflow")
+    # Docker Compose 네트워크 내에서 PostgreSQL 컨테이너의 서비스 이름은 'db'입니다.
+    pg_host = "db" 
+    pg_port = "5432"
+
+    # JDBC 드라이버 JAR 파일 경로 (Docker 컨테이너 내에서 Spark-submit 시 --jars 옵션으로 지정)
     spark = SparkSession.builder \
         .appName(app_name) \
         .config("spark.hadoop.fs.s3a.endpoint", minio_endpoint) \
@@ -24,53 +35,60 @@ def create_spark_session(app_name):
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
         .getOrCreate()
     
-    return spark
+    # PostgreSQL 접속 정보 딕셔너리 반환
+    pg_config = {
+        "url": f"jdbc:postgresql://{pg_host}:{pg_port}/{pg_db}",
+        "user": pg_user,
+        "password": pg_password,
+        "driver": "org.postgresql.Driver"
+    }
+    
+    return spark, pg_config
 
-def process_data(spark: SparkSession, minio_bucket: str):
+def process_and_load_data(spark: SparkSession, minio_bucket: str, pg_config: dict, output_table: str):
     """
-    MinIO에서 원본 로그 데이터를 읽어와 처리하고 결과를 출력합니다.
+    MinIO에서 원본 로그 데이터를 읽어와 처리하고 PostgreSQL에 적재합니다.
     """
-    input_path = f"s3a://{minio_bucket}/logs/*/*.json" # MinIO의 특정 버킷 내 모든 로그 파일 지정
-    output_path = f"s3a://{minio_bucket}/processed_logs/" # 처리된 데이터를 저장할 경로 (MinIO 내)
-
+    input_path = f"s3a://{minio_bucket}/logs/*/*.json"
+    
     print(f"Reading data from: {input_path}")
     
     try:
-        # MinIO에서 JSON 파일 읽기 (자동으로 스키마 추론)
         df = spark.read.json(input_path)
         
         print("Schema of raw data:")
         df.printSchema()
 
-        # 데이터 변환:
-        # 1. timestamp 컬럼을 실제 Timestamp 타입으로 변환
-        # 2. price, quantity가 null일 경우 0으로 대체 (예시)
-        # 3. 처리일자 컬럼 추가
-        processed_df = df.withColumn("timestamp", to_timestamp(col("timestamp"), "yyyy-MM-dd HH:mm:ss")) \
-                         .withColumn("price", col("price").cast("double")) \
-                         .withColumn("quantity", col("quantity").cast("integer")) \
-                         .withColumn("price", col("price").cast("double").alias("price")) \
-                         .withColumn("quantity", col("quantity").cast("integer").alias("quantity")) \
-                         .withColumn("price", col("price").cast("double")) \
-                         .withColumn("quantity", col("quantity").cast("integer")) \
+        # 데이터 변환 (이전과 동일)
+        processed_df = df.withColumn("timestamp", to_timestamp(col("timestamp"), "yyyy-MM-dd'T'HH:mm:ss.SSSSSS")) \
+                         .withColumn("price", col("price").cast(DoubleType())) \
+                         .withColumn("quantity", col("quantity").cast(IntegerType())) \
                          .fillna(0, subset=['price', 'quantity']) \
-                         .withColumn("processing_date", current_date())
+                         .withColumn("processing_date", current_date()) \
+                         .select( # 필요한 컬럼만 선택하고 순서 조정 (테이블 스키마 고려)
+                             "timestamp", "user_id", "item_id", "event_type", 
+                             "price", "quantity", "search_query", "user_agent", 
+                             "ip_address", "referrer", "campaign_source", 
+                             "product_category", "is_bot", "processing_date"
+                         )
 
-        print("Schema of processed data:")
+        print("Schema of processed data (for DB):")
         processed_df.printSchema()
+        print("Sample of processed data (for DB):")
+        processed_df.show(5, truncate=False)
 
-        print("Sample of processed data:")
-        processed_df.show(5, truncate=False) # 5개 행 출력, 긴 문자열 잘리지 않게
-
-        # 처리된 데이터를 MinIO의 다른 경로에 저장 (예: Parquet 형식)
-        # 실제 파이프라인에서는 여기에 데이터 웨어하우스 적재 로직이 들어갑니다.
-        # 편의상 MinIO에 저장하는 예시를 남깁니다.
-        # processed_df.write.mode("overwrite").parquet(output_path)
-        # print(f"Processed data written to: {output_path}")
+        # PostgreSQL에 데이터 적재
+        print(f"Loading data into PostgreSQL table: {output_table}")
+        processed_df.write \
+            .format("jdbc") \
+            .options(**pg_config) \
+            .option("dbtable", output_table) \
+            .mode("append") \
+            .save()
+        print(f"Successfully loaded data into PostgreSQL table '{output_table}'.")
 
     except Exception as e:
-        print(f"Error processing data: {e}")
-        # 오류 발생 시 스택 트레이스 출력
+        print(f"Error processing and loading data: {e}")
         import traceback
         traceback.print_exc()
 
@@ -78,12 +96,14 @@ def process_data(spark: SparkSession, minio_bucket: str):
 if __name__ == "__main__":
     app_name = "MinIO_Log_Processor"
     minio_raw_data_bucket = os.getenv("MINIO_RAW_DATA_BUCKET", "raw-logs")
+    output_table = "processed_logs" # PostgreSQL에 저장될 테이블 이름
 
-    spark = create_spark_session(app_name)
-    
+    # SparkSession과 PostgreSQL 접속 정보 가져오기
+    spark, pg_config = create_spark_session(app_name)
+
     if spark:
         print(f"SparkSession created successfully for app: {app_name}")
-        process_data(spark, minio_raw_data_bucket)
+        process_and_load_data(spark, minio_raw_data_bucket, pg_config, output_table)
         spark.stop()
         print("Spark application finished.")
     else:
