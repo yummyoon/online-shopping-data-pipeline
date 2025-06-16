@@ -18,9 +18,9 @@ def create_spark_session(app_name):
 
     # PostgreSQL 접속 정보는 환경 변수에서 가져옵니다.
     # Docker Compose에서 Spark 컨테이너의 환경 변수로 설정해 줍니다.
-    pg_db = os.getenv("POSTGRES_DB", "analytics_db")
-    pg_user = os.getenv("POSTGRES_USER", "airflow")
-    pg_password = os.getenv("POSTGRES_PASSWORD", "airflow")
+    pg_db = os.getenv("DW_POSTGRES_DB", "analytics_db")
+    pg_user = os.getenv("DW_POSTGRES_USER", "airflow")
+    pg_password = os.getenv("DW_POSTGRES_PASSWORD", "airflow")
     # Docker Compose 네트워크 내에서 PostgreSQL 컨테이너의 서비스 이름은 'db'입니다.
     pg_host = "db" 
     pg_port = "5432"
