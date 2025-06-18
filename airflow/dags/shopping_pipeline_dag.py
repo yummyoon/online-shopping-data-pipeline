@@ -1,4 +1,4 @@
-## airflow/dags/shopping_pipeline_dag.py
+# airflow/dags/shopping_pipeline_dag.py
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOpe
 with DAG(
     dag_id="online_shopping_pipeline", # Airflow UI에 표시될 DAG의 고유 ID
     start_date=pendulum.datetime(2025, 6, 15, tz="Asia/Seoul"), # 파이프라인이 언제부터 유효한지 설정
-    schedule=None,  # None으로 설정하면 수동으로만 실행됩니다. (나중에 "@daily" 등으로 변경 가능)
-    catchup=False,  # 시작일자부터 놓친 모든 스케줄을 한 번에 실행할지 여부. 보통 False로 둡니다.
+    schedule=None,    # None으로 설정하면 수동으로만 실행됩니다. (나중에 "@daily" 등으로 변경 가능)
+    catchup=False,    # 시작일자부터 놓친 모든 스케줄을 한 번에 실행할지 여부. 보통 False로 둡니다.
     tags=["shopping-mall", "data-pipeline"], # UI에서 DAG를 쉽게 찾기 위한 태그
 ) as dag:
     
@@ -31,10 +31,12 @@ with DAG(
         task_id="process_logs_with_spark",
         # ⭐️ Airflow UI에서 설정할 Connection의 ID
         conn_id="spark_default", 
-        # Spark 컨테이너 내부에 마운트된 PySpark 스크립트 경로
-        application="/opt/bitnami/spark/jobs/process_raw_logs.py",
-        # Spark 작업에 필요한 jar 파일 경로 (PostgreSQL JDBC 드라이버)
-        jars="/opt/bitnami/spark/jars/postgresql-42.7.6.jar",
+        # 🟢 수정! Spark 애플리케이션의 실제 경로 (Airflow Worker 컨테이너 내부 마운트 경로)
+        application="/opt/airflow/src/spark_jobs/process_raw_logs.py",
+        # 🟢 수정! JDBC 드라이버 JAR 파일의 실제 경로 (Airflow Worker 컨테이너 내부 마운트 경로)
+        jars="/opt/airflow/jars/postgresql-42.7.6.jar",
+        name="arrow-spark",
+        queue="root.default",
         # Spark 작업 실행에 필요한 환경 변수들
         # docker-compose에서 Spark 컨테이너에 설정한 변수와 동일하게 맞춰줍니다.
         env_vars={
