@@ -20,7 +20,7 @@ except ImportError:
 
 if not load_dotenv_success:
     print("Warning: .env file not loaded. Using default environment variables for local testing.")
-    os.environ.setdefault("MINIO_ENDPOINT", "localhost:9000")
+    os.environ.setdefault("MINIO_ENDPOINT", "minio:9000")
     os.environ.setdefault("MINIO_ACCESS_KEY", "minioadmin") # MinIO docker-compose.yaml 에 설정할 기본값
     os.environ.setdefault("MINIO_SECRET_KEY", "minioadmin") # MinIO docker-compose.yaml 에 설정할 기본값
     os.environ.setdefault("MINIO_RAW_DATA_BUCKET", "raw-logs")
