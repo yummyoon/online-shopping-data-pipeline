@@ -1,7 +1,51 @@
-version: '3.8'
+# docker-compose.yaml (수정된 버전)
 
+# Basic Airflow cluster configuration for CeleryExecutor with Redis and PostgreSQL.
+# This configuration supports basic configuration using environment variables or an .env file
+# Based on Apache Airflow official docker-compose.yaml
+
+---
+x-airflow-common:
+  &airflow-common
+  # You can extend the official Airflow image with your custom dependencies
+  image: apache/airflow:2.8.1 # 💡 Airflow 버전 명시
+  build: ./airflow # 💡 Java 설치를 위한 custom Dockerfile 사용 시 주석 해제
+  
+
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres/airflow # 💡 DB 서비스 이름 'postgres' -> 'airflow-postgres'로 변경
+    AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@airflow-postgres/airflow # 💡 DB 서비스 이름 변경
+    AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/0
+    AIRFLOW__CORE__FERNET_KEY: ''
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false' # 💡 예제 DAG 로드 여부
+    AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+    # 💡 추가 요구사항 정의 (Airflow Worker가 사용하는 모든 라이브러리 포함)
+    _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-apache-airflow-providers-apache-spark==4.1.1 apache-airflow-providers-amazon==8.5.0 minio python-dotenv psycopg2-binary Faker}
+  
+  # 💡 볼륨 마운트 경로 재설정: Airflow 프로젝트 디렉터리를 기준으로 합니다.
+  volumes:
+    - ${AIRFLOW_PROJ_DIR:-.}/airflow/dags:/opt/airflow/dags # DAGs 폴더
+    - ${AIRFLOW_PROJ_DIR:-.}/airflow/logs:/opt/airflow/logs # Logs 폴더
+    - ${AIRFLOW_PROJ_DIR:-.}/airflow/config:/opt/airflow/config # Config 폴더
+    - ${AIRFLOW_PROJ_DIR:-.}/airflow/plugins:/opt/airflow/plugins # Plugins 폴더
+    - ${AIRFLOW_PROJ_DIR:-.}/src:/opt/airflow/src # 프로젝트 src 코드 마운트 (데이터 생성, Spark 잡 스크립트)
+    - ${AIRFLOW_PROJ_DIR:-.}/jars:/opt/airflow/jars # JDBC 드라이버 JAR 파일 마운트 (Airflow Worker용)
+
+  user: "${AIRFLOW_UID:-50000}:0" # 💡 AIRFLOW_UID는 .env에 설정 권장
+
+  depends_on:
+    &airflow-common-depends-on
+    redis:
+      condition: service_healthy
+    airflow-postgres: # 💡 DB 서비스 이름 'postgres' -> 'airflow-postgres'로 변경
+      condition: service_healthy
+
+# -------------------- 데이터 플랫폼 서비스 --------------------
 services:
-  # -------------------- 데이터 플랫폼 서비스 --------------------
   minio:
     image: minio/minio:latest
     container_name: minio
@@ -23,7 +67,7 @@ services:
       retries: 3
       start_period: 30s
 
-  data-warehouse:
+  data-warehouse-db: # 💡 서비스 이름 변경
     image: postgres:13
     container_name: data-warehouse-db
     ports: 
@@ -34,7 +78,7 @@ services:
       POSTGRES_PASSWORD: ${DW_POSTGRES_PASSWORD:-dwpassword}
     volumes:
       - dw_pg_data:/var/lib/postgresql/data
-      - ./sql:/docker-entrypoint-initdb.d
+      - ${AIRFLOW_PROJ_DIR:-.}/sql:/docker-entrypoint-initdb.d # SQL 초기화 스크립트 마운트
     networks:
       - pipeline-network
     healthcheck:
@@ -47,22 +91,26 @@ services:
   spark-master:
     image: bitnami/spark:3.5.0
     container_name: spark-master
-    ports: 
-      - "8081:8080"
-      - "7077:7077"
+    ports:
+      - "8081:8080" # Spark UI (host:8081, container:8080)
+      - "7077:7077" # Spark Master Port
     environment:
       - SPARK_MODE=master
-      - SPARK_MASTER_URL=spark://spark-master:7077
-      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_MASTER_URL=spark://spark-master:7077 # 명시적으로 Master URL 설정
+      - JAVA_HOME=/opt/bitnami/java # 💡 JAVA_HOME 명시적 설정
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no # Bitnami 기본값 확인 후 필요 없으면 삭제 가능
       - SPARK_RPC_ENCRYPTION_ENABLED=no
       - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
       - SPARK_SSL_ENABLED=no
+    volumes: # 💡 핵심: Spark 애플리케이션 스크립트 마운트
+      - ${AIRFLOW_PROJ_DIR:-.}/src/spark_jobs:/opt/bitnami/spark/jobs # process_raw_logs.py 위치
+      # 💡 JDBC JAR 파일은 SparkSubmitOperator가 클러스터로 전송하므로 여기서 직접 마운트 안 함
     networks:
       - pipeline-network
     depends_on:
       minio:
         condition: service_healthy
-      data-warehouse:
+      data-warehouse-db: # 💡 서비스 이름 변경
         condition: service_healthy
 
   spark-worker:
@@ -71,80 +119,197 @@ services:
     environment:
       - SPARK_MODE=worker
       - SPARK_MASTER_URL=spark://spark-master:7077
-      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - JAVA_HOME=/opt/bitnami/java # 💡 JAVA_HOME 명시적 설정
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no # Bitnami 기본값 확인 후 필요 없으면 삭제 가능
       - SPARK_RPC_ENCRYPTION_ENABLED=no
       - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
       - SPARK_SSL_ENABLED=no
+    volumes: # 💡 핵심: Spark 애플리케이션 스크립트 마운트
+      - ${AIRFLOW_PROJ_DIR:-.}/src/spark_jobs:/opt/bitnami/spark/jobs
+      # 💡 JDBC JAR 파일은 SparkSubmitOperator가 클러스터로 전송하므로 여기서 직접 마운트 안 함
     networks:
       - pipeline-network
     depends_on:
       - spark-master
 
-  # -------------------- Airflow 스택 서비스 --------------------
-  airflow-postgres:
+  # -------------------- Airflow 핵심 서비스들 (공식 템플릿 기반) --------------------
+  airflow-postgres: # 💡 서비스 이름 변경
     image: postgres:13
-    container_name: airflow-postgres
     environment:
-      POSTGRES_USER: ${AIRFLOW_DB_USER:-airflow}
-      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD:-airflow}
-      POSTGRES_DB: ${AIRFLOW_DB_NAME:-airflow}
-    volumes: 
-      - airflow_pg_data:/var/lib/postgresql/data
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow-postgres-db-volume:/var/lib/postgresql/data # 💡 볼륨 이름 변경
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
     networks:
       - pipeline-network
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${AIRFLOW_DB_USER:-airflow} -d ${AIRFLOW_DB_NAME:-airflow}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
 
   redis:
-    image: redis:7.2-bookworm
-    container_name: redis
-    volumes: 
-      - airflow_redis_data:/data
-    networks:
-      - pipeline-network
+    image: redis:latest
+    expose:
+      - 6379
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-
-  # -------------------- Airflow 핵심 서비스들 --------------------
-  airflow-init:
-    image: apache/airflow:2.8.1
-    container_name: airflow-init
-    user: "${AIRFLOW_UID:-50000}:0"
+      timeout: 30s
+      retries: 50
+      start_period: 30s
+    restart: always
     networks:
       - pipeline-network
-    environment: &airflow-common-env
-      AIRFLOW__CORE__EXECUTOR: CeleryExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER:-airflow}:${AIRFLOW_DB_PASSWORD:-airflow}@airflow-postgres:5432/${AIRFLOW_DB_NAME:-airflow}
-      AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://${AIRFLOW_DB_USER:-airflow}:${AIRFLOW_DB_PASSWORD:-airflow}@airflow-postgres:5432/${AIRFLOW_DB_NAME:-airflow}
-      AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/0
-      AIRFLOW__CORE__FERNET_KEY: ''
-      AIRFLOW__CONN_SPARK_DEFAULT: 'spark://spark-master:7077'
-      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
-      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
-      AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
-      AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
-      _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
-    volumes:
-      &airflow-common-volumes
-      - ./src:/opt/airflow/src
-      - ./airflow/dags:/opt/airflow/dags
-      - ./airflow/logs:/opt/airflow/logs
-      - ./airflow/plugins:/opt/airflow/plugins
-      - ./jars:/opt/airflow/jars
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow-webserver # 💡 컨테이너 이름 명시 (선택 사항)
+    command: webserver
+    ports:
+      - "8080:8080" # Airflow UI 포트
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    networks:
+      - pipeline-network
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow-scheduler # 💡 컨테이너 이름 명시
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    networks:
+      - pipeline-network
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-worker:
+    <<: *airflow-common
+    container_name: airflow-worker # 💡 컨테이너 이름 명시
+    # build: ./airflow # 💡 Java 설치를 위한 custom Dockerfile 사용 시 주석 해제
+    command: celery worker
+    # 💡 리소스 할당은 x-airflow-common에 정의할 수도 있지만, worker만 특수하게 할당할 경우 여기에 추가
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - 'celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}" || celery --app airflow.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}"'
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    environment:
+      <<: *airflow-common-env # 공통 환경 변수 상속
+      DUMB_INIT_SETSID: "0" # 워커 종료 시그널 전파
+    restart: always
+    networks:
+      - pipeline-network
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  # airflow-triggerer: # 💡 Airflow 2.2+의 deferred 태스크를 사용하지 않으면 필요 없음
+  #   <<: *airflow-common
+  #   command: triggerer
+  #   healthcheck:
+  #     test: ["CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"']
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 5
+  #     start_period: 30s
+  #   restart: always
+  #   networks:
+  #     - pipeline-network
+  #   depends_on:
+  #     <<: *airflow-common-depends-on
+  #     airflow-init:
+  #       condition: service_completed_successfully
+
+  airflow-init:
+    <<: *airflow-common  # 🔥 핵심 수정: x-airflow-common 설정 상속
+    container_name: airflow-init # 💡 컨테이너 이름 명시
     entrypoint: /bin/bash
     command:
       - -c
       - |
-        set -e
-        airflow db init
+        if [[ -z "${AIRFLOW_UID}" ]]; then
+          echo
+          echo -e "\033[1;33mWARNING!!!: AIRFLOW_UID not set!\e[0m"
+          echo "If you are on Linux, you SHOULD follow the instructions below to set "
+          echo "AIRFLOW_UID environment variable, otherwise files will be owned by root."
+          echo "For other operating systems you can get rid of the warning with manually created .env file:"
+          echo "    See: https://airflow.apache.org/docs/apache-airflow/stable/howto/docker-compose/index.html#setting-the-right-airflow-user"
+          echo
+        fi
+        # 💡 리소스 경고 메시지 출력 (공식 문서 로직)
+        one_meg=1048576
+        mem_available=$$(($$(getconf _PHYS_PAGES) * $$(getconf PAGE_SIZE) / one_meg))
+        cpus_available=$$(grep -cE 'cpu[0-9]+' /proc/stat)
+        disk_available=$$(df / | tail -1 | awk '{print $$4}')
+        warning_resources="false"
+        if (( mem_available < 4000 )) ; then
+          echo
+          echo -e "\033[1;33mWARNING!!!: Not enough memory available for Docker.\e[0m"
+          echo "At least 4GB of memory required. You have $$(numfmt --to iec $$((mem_available * one_meg)))"
+          echo
+          warning_resources="true"
+        fi
+        if (( cpus_available < 2 )); then
+          echo
+          echo -e "\033[1;33mWARNING!!!: Not enough CPUS available for Docker.\e[0m"
+          echo "At least 2 CPUs recommended. You have $${cpus_available}"
+          echo
+          warning_resources="true"
+        fi
+        if (( disk_available < one_meg * 10 )); then
+          echo
+          echo -e "\033[1;33mWARNING!!!: Not enough Disk space available for Docker.\e[0m"
+          echo "At least 10 GBs recommended. You have $$(numfmt --to iec $$((disk_available * 1024 )))"
+          echo
+          warning_resources="true"
+        fi
+        if [[ $${warning_resources} == "true" ]]; then
+          echo
+          echo -e "\033[1;33mWARNING!!!: You have not enough resources to run Airflow (see above)!\e[0m"
+          echo "Please follow the instructions to increase amount of resources available:"
+          echo "   https://airflow.apache.org/docs/apache-airflow/stable/howto/docker-compose/index.html#before-you-begin"
+          echo
+        fi
+        # 💡 권한 문제 해결을 위한 디렉터리 생성 및 chown (공식 문서 로직)
+        mkdir -p /opt/airflow/logs /opt/airflow/dags /opt/airflow/plugins /opt/airflow/config /opt/airflow/src /opt/airflow/jars # 프로젝트 폴더 마운트 경로 추가
+        chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/{logs,dags,plugins,config,src,jars} # 마운트된 모든 폴더에 권한 설정
+        
+        echo "Initializing Airflow database..."
+        exec airflow db init # 'exec'를 붙여 프로세스 ID가 유지되도록
+
+        echo "Creating Airflow admin user..."
         airflow users create \
           --username "${_AIRFLOW_WWW_USER_USERNAME:-admin}" \
           --password "${_AIRFLOW_WWW_USER_PASSWORD:-admin}" \
@@ -152,106 +317,77 @@ services:
           --lastname User \
           --role Admin \
           --email admin@example.com || echo "User already exists"
+
+        echo "Creating/Updating Spark Connection..."
+        # spark_default Connection을 명시적으로 생성/업데이트
+        # Host에는 'spark-master'만, Extra에 'spark://' 포함 Master URL
+        airflow connections add spark_default \
+          --conn-type Spark \
+          --conn-host spark-master \
+          --conn-port 7077 \
+          --conn-extra '{"master":"spark://spark-master:7077"}' \
+          --replace || echo "Spark Connection already exists or command failed silently, please check logs."
+        
+        echo "Airflow init complete."
+
+    environment:
+      <<: *airflow-common-env # 공통 환경 변수 상속
+      _AIRFLOW_DB_MIGRATE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-admin}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-admin}
+      _PIP_ADDITIONAL_REQUIREMENTS: '' # 🔥 핵심 수정: init 단계에서는 추가 패키지 설치 안 함
+    user: "0:0" # init 컨테이너는 root로 실행하여 권한 문제 해결
+    networks:
+      - pipeline-network
     depends_on:
       airflow-postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
 
-  airflow-scheduler:
-    image: apache/airflow:2.8.1
-    container_name: airflow-scheduler
-    user: "${AIRFLOW_UID:-50000}:0"
-    networks: 
+  airflow-cli:
+    <<: *airflow-common
+    profiles:
+      - debug
+    environment:
+      <<: *airflow-common-env
+      CONNECTION_CHECK_MAX_COUNT: "0"
+    command:
+      - bash
+      - -c
+      - airflow
+    networks:
       - pipeline-network
-    environment: *airflow-common-env
-    volumes: *airflow-common-volumes
-    command: scheduler
-    healthcheck:
-      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-    restart: always
-    depends_on:
-      airflow-init:
-        condition: service_completed_successfully
 
-  airflow-webserver:
-    image: apache/airflow:2.8.1
-    container_name: airflow-webserver
-    user: "${AIRFLOW_UID:-50000}:0"
-    networks: 
-      - pipeline-network
-    environment: *airflow-common-env
-    volumes: *airflow-common-volumes
-    ports: 
-      - "8080:8080"
-    command: webserver
-    healthcheck:
-      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-    restart: always
-    depends_on:
-      airflow-init:
-        condition: service_completed_successfully
-
-  airflow-worker:
-    image: apache/airflow:2.8.1
-    build: ./airflow
-    container_name: airflow-worker
-    user: "${AIRFLOW_UID:-50000}:0"
-    networks: 
-      - pipeline-network
-    environment: *airflow-common-env
-    volumes: *airflow-common-volumes
-    command: celery worker
-    healthcheck:
-      test:
-        - "CMD-SHELL"
-        - 'celery --app airflow.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}"'
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-    restart: always
-    depends_on:
-      airflow-init:
-        condition: service_completed_successfully
-
-  airflow-flower:
-    image: apache/airflow:2.8.1
-    container_name: airflow-flower
-    user: "${AIRFLOW_UID:-50000}:0"
-    networks: 
-      - pipeline-network
-    environment: *airflow-common-env
-    volumes: *airflow-common-volumes
-    ports: 
-      - "5555:5555"
+  airflow-flower: # 💡 이름 충돌 피하기 위해 flower -> airflow-flower
+    <<: *airflow-common
     command: celery flower
+    # profiles: # 필요시 활성화
+    #   - flower
+    ports:
+      - "5555:5555"
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:5555/"]
       interval: 30s
       timeout: 10s
-      retries: 3
+      retries: 5
       start_period: 30s
     restart: always
+    networks:
+      - pipeline-network
     depends_on:
+      <<: *airflow-common-depends-on
       airflow-init:
         condition: service_completed_successfully
 
+# -------------------- 네트워크 및 볼륨 정의 --------------------
 networks:
   pipeline-network:
     driver: bridge
 
 volumes:
-  minio_data:
-  spark_logs:
-  dw_pg_data:
-  airflow_pg_data:
-  airflow_redis_data:
+  minio_data: # MinIO 데이터 볼륨
+  dw_pg_data: # 데이터 웨어하우스 PostgreSQL 데이터 볼륨
+  airflow-postgres-db-volume: # 💡 Airflow PostgreSQL 데이터 볼륨 (이름 변경)
+  airflow_redis_data: # Airflow Redis 데이터 볼륨 (공식 문서와 이름 통일)

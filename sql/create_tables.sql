@@ -5,13 +5,13 @@ DROP TABLE IF EXISTS processed_logs;
 
 -- 처리된 로그 데이터를 저장할 테이블 생성
 CREATE TABLE processed_logs (
-    log_id SERIAL PRIMARY KEY, -- 자동 증가하는 기본 키
-    "timestamp" TIMESTAMP,     -- Spark의 timestamp는 PostgreSQL의 timestamp와 호환됨
+    log_id SERIAL PRIMARY KEY,
+    "timestamp" TIMESTAMP,
     user_id VARCHAR(255),
     item_id INTEGER,
     event_type VARCHAR(50),
-    price DOUBLE PRECISION,    -- Spark의 DoubleType
-    quantity INTEGER,          -- Spark의 IntegerType
+    price DOUBLE PRECISION,
+    quantity INTEGER,
     search_query TEXT,
     user_agent TEXT,
     ip_address VARCHAR(50),
@@ -19,7 +19,7 @@ CREATE TABLE processed_logs (
     campaign_source VARCHAR(255),
     product_category VARCHAR(100),
     is_bot BOOLEAN,
-    processing_date DATE       -- Spark에서 추가한 처리 날짜
+    processing_date DATE
 );
 
 -- 자주 조회될 컬럼에 인덱스 생성 (성능 향상)
