@@ -1,8 +1,0 @@
-boto3
-pyspark
-apache-airflow
-pandas
-matplotlib
-seaborn
-psycopg2-binary
-Faker

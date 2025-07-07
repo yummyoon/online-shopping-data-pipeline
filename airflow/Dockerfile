@@ -1,5 +1,5 @@
 # online-shopping-pipeline/airflow/Dockerfile
-FROM apache/airflow:2.8.1
+FROM apache/airflow:2.11.0-python3.11
 
 USER root
 
@@ -15,3 +15,12 @@ ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 ENV PATH=$PATH:$JAVA_HOME/bin
 
 USER airflow
+
+COPY requirements.txt .
+
+ARG AIRFLOW_VERSION=2.11.0 # 또는 사용하려는 버전
+ARG PYTHON_VERSION=3.11  # 또는 사용하려는 버전
+RUN pip install --no-cache-dir \
+    --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${PYTHON_VERSION}.txt" \
+    "apache-airflow[celery,postgres,redis]==${AIRFLOW_VERSION}" \
+    -r requirements.txt
