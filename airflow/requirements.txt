@@ -1,3 +1,4 @@
+# requirements.txt
 # Airflow Core & Providers
 # apache-airflow 패키지는 extras와 함께 설치하는 것이 표준입니다.
 apache-airflow-providers-apache-spark
@@ -21,6 +22,6 @@ Faker
 python-dotenv
 pendulum
 
-# Visualization (선택 사항)
+# Visualization
 matplotlib
 seaborn

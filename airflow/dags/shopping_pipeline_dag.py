@@ -24,13 +24,12 @@ with DAG(
     submit_spark_job = SparkSubmitOperator(
         task_id="process_logs_with_spark",
         conn_id="spark_default",
-        # ✅ 2. Spark 워커가 접근 가능한 경로로 수정
-        application="/opt/bitnami/spark/jobs/process_raw_logs.py",
-        # ✅ 1. 데이터 핸드오프를 위해 실행 날짜 전달
+        application="/opt/airflow/src/spark_jobs/process_raw_logs.py",
         application_args=["--date", "{{ ds }}"],
-        jars="/opt/bitnami/spark/jars/postgresql-42.7.6.jar",
+        # ✅ 1. 필요한 JAR 파일들을 쉼표로 구분하여 모두 지정
+        # ✅ 1. Airflow Worker 컨테이너 기준으로 postgresql-42.7.6.jar 경로 수정
+        jars="/opt/airflow/jars/postgresql-42.7.6.jar",
         name="arrow-spark",
-        queue="root.default",
         env_vars={
             "MINIO_ENDPOINT": "http://minio:9000",
             "MINIO_ACCESS_KEY": "minioadmin",
@@ -39,6 +38,15 @@ with DAG(
             "DW_POSTGRES_DB": "analytics_db",
             "DW_POSTGRES_USER": "pipeline_user",
             "DW_POSTGRES_PASSWORD": "pipeline_password",
+        },
+        # ✅ 2. Spark가 MinIO를 사용하도록 상세 설정 추가
+        conf={
+            "spark.hadoop.fs.s3a.endpoint": "http://minio:9000",
+            "spark.hadoop.fs.s3a.access.key": "minioadmin",
+            "spark.hadoop.fs.s3a.secret.key": "minioadmin",
+            "spark.hadoop.fs.s3a.path.style.access": "true",
+            "spark.hadoop.fs.s3a.impl": "org.apache.hadoop.fs.s3a.S3AFileSystem",
+            "spark.hadoop.fs.s3a.connection.ssl.enabled": "false",
         },
     )
 
